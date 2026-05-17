@@ -11,6 +11,7 @@ app.use(express.json());
 const port = process.env.PORT || 3000;
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.dvhvhcc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -23,21 +24,17 @@ let booksCollection;
 let ordersCollection;
 
 async function connectDB() {
-  try {
-    await client.connect();
+  await client.connect();
 
-    const db = client.db("bookcourierDB");
+  const db = client.db("bookcourierDB");
 
-    booksCollection = db.collection("books");
-    ordersCollection = db.collection("orders");
+  booksCollection = db.collection("books");
+  ordersCollection = db.collection("orders");
 
-    console.log("MongoDB Connected");
-  } catch (error) {
-    console.log(error);
-  }
+  console.log("MongoDB Connected");
 }
 
-connectDB();
+connectDB().catch(console.error);
 
 app.get("/", (req, res) => {
   res.send("BookCourier server is running");
@@ -45,111 +42,140 @@ app.get("/", (req, res) => {
 
 app.get("/books", async (req, res) => {
   try {
+    if (!booksCollection) {
+      await connectDB();
+    }
+
     const result = await booksCollection.find().toArray();
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to get books" });
+    res.status(500).send({
+      message: "Failed to get books",
+      error: error.message,
+    });
   }
 });
 
 app.get("/books/:id", async (req, res) => {
   try {
+    if (!booksCollection) {
+      await connectDB();
+    }
+
     const id = req.params.id;
-
     const query = { _id: new ObjectId(id) };
-
     const result = await booksCollection.findOne(query);
 
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to get book" });
+    res.status(500).send({
+      message: "Failed to get book",
+      error: error.message,
+    });
   }
 });
 
 app.post("/books", async (req, res) => {
   try {
-    const book = req.body;
+    if (!booksCollection) {
+      await connectDB();
+    }
 
+    const book = req.body;
     const result = await booksCollection.insertOne(book);
 
     res.send(result);
- } catch (error) {
-  res.status(500).send({
-    message: "Failed to get books",
-    error: error.message,
-  });
-}
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to add book",
+      error: error.message,
+    });
+  }
 });
 
 app.post("/orders", async (req, res) => {
   try {
-    const order = req.body;
+    if (!ordersCollection) {
+      await connectDB();
+    }
+
+    const order = {
+      ...req.body,
+      status: "pending",
+      paymentStatus: "unpaid",
+      orderDate: new Date(),
+    };
 
     const result = await ordersCollection.insertOne(order);
-
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to place order" });
+    res.status(500).send({
+      message: "Failed to place order",
+      error: error.message,
+    });
   }
 });
 
 app.get("/orders", async (req, res) => {
   try {
-    const email = req.query.email;
+    if (!ordersCollection) {
+      await connectDB();
+    }
 
-    const query = {
-      userEmail: email,
-    };
+    const email = req.query.email;
+    const query = email ? { userEmail: email } : {};
 
     const result = await ordersCollection.find(query).toArray();
-
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to get orders" });
+    res.status(500).send({
+      message: "Failed to get orders",
+      error: error.message,
+    });
   }
 });
 
 app.patch("/orders/:id/cancel", async (req, res) => {
   try {
+    if (!ordersCollection) {
+      await connectDB();
+    }
+
     const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
 
-    const query = {
-      _id: new ObjectId(id),
-    };
-
-    const updateDoc = {
-      $set: {
-        status: "cancelled",
-      },
-    };
-
-    const result = await ordersCollection.updateOne(query, updateDoc);
+    const result = await ordersCollection.updateOne(query, {
+      $set: { status: "cancelled" },
+    });
 
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to cancel order" });
+    res.status(500).send({
+      message: "Failed to cancel order",
+      error: error.message,
+    });
   }
 });
 
 app.patch("/orders/:id/pay", async (req, res) => {
   try {
+    if (!ordersCollection) {
+      await connectDB();
+    }
+
     const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
 
-    const query = {
-      _id: new ObjectId(id),
-    };
-
-    const updateDoc = {
-      $set: {
-        paymentStatus: "paid",
-      },
-    };
-
-    const result = await ordersCollection.updateOne(query, updateDoc);
+    const result = await ordersCollection.updateOne(query, {
+      $set: { paymentStatus: "paid" },
+    });
 
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "Failed to pay order" });
+    res.status(500).send({
+      message: "Failed to pay order",
+      error: error.message,
+    });
   }
 });
 
