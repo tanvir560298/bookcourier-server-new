@@ -21,8 +21,7 @@ if (!admin.apps.length) {
   });
 }
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.dvhvhcc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mfz0bkx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -37,6 +36,7 @@ async function getDB() {
   if (!database) {
     await client.connect();
     database = client.db("bookCourierDB");
+    
   }
   return database;
 }
@@ -513,5 +513,6 @@ module.exports = app;
 if (require.main === module) {
   app.listen(port, () => {
     console.log(`BookCourier running on port ${port}`);
+    
   });
 }
