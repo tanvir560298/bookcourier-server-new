@@ -73,9 +73,12 @@ app.post("/books", async (req, res) => {
     const result = await booksCollection.insertOne(book);
 
     res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Failed to add book" });
-  }
+ } catch (error) {
+  res.status(500).send({
+    message: "Failed to get books",
+    error: error.message,
+  });
+}
 });
 
 app.post("/orders", async (req, res) => {
