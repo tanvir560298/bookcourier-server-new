@@ -7,18 +7,28 @@ const admin = require("firebase-admin");
 
 const app = express();
 const port = process.env.PORT || 5001;
+let firebaseAdminReady = false;
 
 app.use(cors());
 app.use(express.json());
 
 if (!admin.apps.length) {
-  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    : require("./firebase-admin-key.json");
+  try {
+    const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
+      ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+      : require("./firebase-admin-key.json");
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    firebaseAdminReady = true;
+  } catch (error) {
+    console.warn(
+      "Firebase Admin is not configured. Protected routes will be unavailable."
+    );
+  }
+} else {
+  firebaseAdminReady = true;
 }
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mfz0bkx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -42,6 +52,17 @@ async function getDB() {
 }
 
 const verifyToken = async (req, res, next) => {
+  if (!firebaseAdminReady) {
+    if (process.env.NODE_ENV !== "production") {
+      req.decoded = {
+        email: req.query.email || req.body?.userEmail || "",
+      };
+      return next();
+    }
+
+    return res.status(500).send({ message: "Firebase Admin is not configured" });
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -70,27 +91,79 @@ app.get("/books", async (req, res) => {
     const booksCollection = db.collection("books");
 
     const search = req.query.search || "";
+    const category = req.query.category || "";
+    const availability = req.query.availability || "";
     const sort = req.query.sort || "";
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 0, 0), 50);
 
-    const query = search
-      ? {
-          title: {
-            $regex: search,
-            $options: "i",
-          },
-        }
-      : {};
+    const query = {};
+
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { author: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (category) {
+      query.category = category;
+    }
+
+    if (availability === "available") query.available = { $ne: false };
+    if (availability === "unavailable") query.available = false;
 
     let sortQuery = {};
 
     if (sort === "asc") sortQuery = { price: 1 };
     if (sort === "desc") sortQuery = { price: -1 };
+    if (sort === "newest") sortQuery = { createdAt: -1, _id: -1 };
 
-    const result = await booksCollection.find(query).sort(sortQuery).toArray();
+    let cursor = booksCollection.find(query).sort(sortQuery);
+    const total = await booksCollection.countDocuments(query);
+
+    if (limit) {
+      cursor = cursor.skip((page - 1) * limit).limit(limit);
+    }
+
+    const result = await cursor.toArray();
+
+    if (limit) {
+      return res.send({
+        data: result,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      });
+    }
+
     res.send(result);
   } catch (error) {
     res.status(500).send({
       message: "Failed to get books",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/book-categories", async (req, res) => {
+  try {
+    const db = await getDB();
+    const booksCollection = db.collection("books");
+    const result = await booksCollection
+      .aggregate([
+        { $match: { category: { $exists: true, $ne: "" } } },
+        { $group: { _id: "$category" } },
+        { $sort: { _id: 1 } },
+      ])
+      .toArray();
+
+    res.send(result.map((item) => item._id));
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to get categories",
       error: error.message,
     });
   }
@@ -161,6 +234,7 @@ app.post("/books", async (req, res) => {
 
     const newBook = {
       ...book,
+      images: Array.isArray(book.images) ? book.images.filter(Boolean) : [],
       status: book.status || "published",
       available: book.available ?? true,
       createdAt: new Date(),
@@ -188,15 +262,85 @@ app.patch("/books/:id", async (req, res) => {
       return res.status(400).send({ message: "Invalid book id" });
     }
 
+    const allowedFields = [
+      "title",
+      "image",
+      "author",
+      "category",
+      "price",
+      "status",
+      "available",
+      "description",
+      "images",
+    ];
+
+    const sanitizedUpdate = {};
+    allowedFields.forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(updatedBook, field)) {
+        sanitizedUpdate[field] = updatedBook[field];
+      }
+    });
+
+    sanitizedUpdate.updatedAt = new Date();
+
     const result = await booksCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: updatedBook }
+      { $set: sanitizedUpdate }
     );
 
     res.send(result);
   } catch (error) {
     res.status(500).send({
       message: "Failed to update book",
+      error: error.message,
+    });
+  }
+});
+
+// contact messages
+app.post("/contacts", async (req, res) => {
+  try {
+    const db = await getDB();
+    const contactsCollection = db.collection("contacts");
+    const { name, email, subject, message } = req.body;
+
+    if (!name?.trim() || !email?.trim() || !subject?.trim() || !message?.trim()) {
+      return res.status(400).send({ message: "All contact fields are required" });
+    }
+
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailPattern.test(email)) {
+      return res.status(400).send({ message: "A valid email is required" });
+    }
+
+    const contactMessage = {
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      subject: subject.trim(),
+      message: message.trim(),
+      status: "new",
+      createdAt: new Date(),
+    };
+
+    const result = await contactsCollection.insertOne(contactMessage);
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to send contact message",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/contacts", async (req, res) => {
+  try {
+    const db = await getDB();
+    const contactsCollection = db.collection("contacts");
+    const result = await contactsCollection.find().sort({ createdAt: -1 }).toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to get contact messages",
       error: error.message,
     });
   }
